@@ -30,6 +30,7 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
         tableView.allowsMultipleSelection = true
         tableView.target = self
         tableView.action = #selector(tableClicked(_:))
+        tableView.doubleAction = #selector(tableDoubleClicked(_:))
         tableView.allowsColumnReordering = true
         tableView.allowsColumnResizing = true
         tableView.columnAutoresizingStyle = .noColumnAutoresizing
@@ -99,6 +100,16 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
     @objc private func tableClicked(_ sender: Any?) {
         guard tableView.clickedColumn >= 0 else { return }
         tableView.highlightedTableColumn = tableView.tableColumns[tableView.clickedColumn]
+    }
+
+    /// ダブルクリックしたセルを編集する。
+    /// NSTableView は「選択済みの行をクリックして少し待つ」ときしか編集を始めないため、
+    /// 未選択の行をダブルクリックしても編集にならない。ここで明示的に編集を始める。
+    @objc private func tableDoubleClicked(_ sender: Any?) {
+        let row = tableView.clickedRow
+        let column = tableView.clickedColumn
+        guard row >= 0, column >= 0 else { return }
+        tableView.editColumn(column, row: row, with: nil, select: true)
     }
 
     /// ヘッダーのクリックで列を選択する（行の選択は外して、削除・コピーの対象を列にする）

@@ -53,11 +53,12 @@ enum MainMenu {
         // Table
         mainMenu.addSubmenu(String(localized: "Table")) { menu in
             menu.addItem(String(localized: "Add Row Above"), #selector(TableViewController.addRowAbove(_:)), "\r", [.command, .shift])
-            menu.addItem(String(localized: "Add Row Below"), #selector(TableViewController.addRowBelow(_:)), "\r")
+            // ⇧⌘+（US 配列は ⇧⌘=、JIS 配列は ⇧⌘; で入力される "+" に一致する）
+            menu.addItem(String(localized: "Add Row Below"), #selector(TableViewController.addRowBelow(_:)), "+", [.command, .shift])
             menu.addItem(String(localized: "Add Column Left"), #selector(TableViewController.addColumnLeft(_:)))
             menu.addItem(String(localized: "Add Column Right"), #selector(TableViewController.addColumnRight(_:)))
             menu.addItem(.separator())
-            menu.addItem(String(localized: "Delete Rows"), #selector(TableViewController.deleteSelectedRows(_:)), "\u{8}", [.command])
+            menu.addItem(String(localized: "Delete Rows"), #selector(TableViewController.deleteSelectedRows(_:)), "-")
             menu.addItem(String(localized: "Delete Columns"), #selector(TableViewController.deleteSelectedColumns(_:)), "\u{8}", [.command, .option])
             menu.addItem(.separator())
             menu.addItem(String(localized: "Use First Row as Header"), #selector(Document.toggleHeaderRow(_:)))

@@ -8,7 +8,8 @@ import CSVCore
 ///
 /// View ベースの NSTableView は列選択に対応していないので、
 /// 「選択中の列」は `highlightedTableColumn`（ヘッダーかセルを最後にクリックした列）で表す。
-final class TableViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSMenuItemValidation {
+final class TableViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSMenuItemValidation,
+    NSMenuDelegate {
     private weak var document: Document?
     private let tableView = NSTableView()
     private let cellIdentifier = NSUserInterfaceItemIdentifier("Cell")
@@ -38,6 +39,7 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
         tableView.gridStyleMask = [.solidVerticalGridLineMask]
         tableView.style = .plain
         tableView.rowSizeStyle = .default
+        tableView.menu = makeContextMenu()
 
         let scrollView = NSScrollView()
         scrollView.documentView = tableView
@@ -60,6 +62,33 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
         case .columns:
             rebuildColumns()
             tableView.reloadData()
+        }
+    }
+
+    // MARK: - Context menu
+
+    private func makeContextMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.delegate = self
+        func add(_ title: String, _ action: Selector) {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
+            item.target = self
+        }
+        add(String(localized: "Add Row Above"), #selector(addRowAbove(_:)))
+        add(String(localized: "Add Row Below"), #selector(addRowBelow(_:)))
+        menu.addItem(.separator())
+        add(String(localized: "Delete Rows"), #selector(deleteSelectedRows(_:)))
+        return menu
+    }
+
+    /// 右クリックした行を操作の対象にする（Finder と同じく、選択外の行なら選択し直す）。
+    /// 行のない所を右クリックしたときは選択を外し、「行を追加」で末尾に追加されるようにする。
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let row = tableView.clickedRow
+        if row < 0 {
+            tableView.deselectAll(nil)
+        } else if !tableView.selectedRowIndexes.contains(row) {
+            tableView.selectRowIndexes([row], byExtendingSelection: false)
         }
     }
 

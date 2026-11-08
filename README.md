@@ -21,6 +21,7 @@ TableEditor/               アプリ本体（AppKit、XIB なし）
   Document.swift           NSDocument。表データ・形式・Undo を管理
   DocumentWindowController.swift  ウインドウ、ツールバー、ステータスバー
   TableViewController.swift       View ベースの NSTableView、行列操作、コピー＆ペースト
+  ColumnSelectionViews.swift      列選択の色付け（行ビューとヘッダー）
   FormatSettingsView.swift        ファイル形式シート（SwiftUI）
   Info.plist               書類タイプ（CSV / TSV / テキスト）
 Packages/CSVCore/          UI に依存しない CSV 処理（Swift Package）
@@ -56,7 +57,7 @@ swift test --package-path Packages/CSVCore
 ## 既知の課題・TODO
 
 - [ ] Shift_JIS の一部の文字（例: 髙）は、macOS の変換で別の符号（NEC 選定 IBM 拡張）になるため、保存するとバイト列が変わる。どちらも正しい CP932 だが、気になる場合は独自の変換表が必要
-- [ ] 列の選択: View ベースの NSTableView は列選択に対応していないため、「最後にクリックした列（ヘッダーの強調表示）」1 列だけを対象にしている。複数列の選択は未対応
+- [ ] 複数の列をまとめてドラッグで並べ替える（NSTableView の制約で 1 列ずつ）
 - [ ] ヘッダー（列名）をその場で編集する UI（`Document.setHeaderTitle` は実装済み）
 - [ ] 行の並べ替え（ドラッグ＆ドロップ）
 - [ ] 「最近使った書類」メニュー

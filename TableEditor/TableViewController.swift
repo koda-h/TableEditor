@@ -7,8 +7,11 @@ import CSVCore
 /// データの列の識別子にはモデル上の列番号を入れる。列をドラッグで並べ替えたら
 /// モデル側も並べ替え、列を作り直して「表示上の位置 = モデルの列番号 + 1」に戻す。
 ///
-/// View ベースの NSTableView は列選択に対応していないので、
-/// 「選択中の列」は `highlightedTableColumn`（ヘッダーかセルを最後にクリックした列）で表す。
+/// View ベースの NSTableView は列選択に対応していないので、列の選択は自前で持つ。
+/// - 列はヘッダーのクリックで選ぶ（⌘クリックで追加・解除、⇧クリックで範囲選択）
+/// - 行の選択と列の選択はどちらか一方だけ（Excel と同じ）
+/// - セルのクリックは行の選択だけ。クリックした列は `activeColumn` として覚え、
+///   列の追加位置や検索の開始位置に使う
 final class TableViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSMenuItemValidation,
     NSMenuDelegate {
     private weak var document: Document?
@@ -16,6 +19,13 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
     private let cellIdentifier = NSUserInterfaceItemIdentifier("Cell")
     private let rowNumberIdentifier = NSUserInterfaceItemIdentifier("RowNumber")
     private var isRebuildingColumns = false
+
+    // 列の選択（モデルの列番号）
+    private var selectedColumns = IndexSet()
+    /// 最後にクリックした列（セルでもヘッダーでも）
+    private var activeColumn: Int?
+    /// ⇧クリックの範囲選択の起点
+    private var columnAnchor: Int?
 
     // 検索
     private var searchQuery = ""
@@ -51,6 +61,10 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
         tableView.rowSizeStyle = .default
         tableView.menu = makeContextMenu()
 
+        let header = ColumnSelectionHeaderView(frame: tableView.headerView?.frame ?? NSRect(x: 0, y: 0, width: 0, height: 28))
+        header.selectedViewColumns = { [weak self] in self?.selectedViewColumns ?? [] }
+        tableView.headerView = header
+
         let scrollView = NSScrollView()
         scrollView.documentView = tableView
         scrollView.hasVerticalScroller = true
@@ -74,6 +88,10 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
         case .columns:
             rebuildColumns()
             tableView.reloadData()
+            // Undo などで列が減ったら、なくなった列を選択から外す
+            if let active = activeColumn, active >= table.columnCount { activeColumn = nil }
+            selectedColumns = selectedColumns.filteredIndexSet { $0 < table.columnCount }
+            redrawColumnSelection()
         }
     }
 
@@ -123,7 +141,6 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
     private func rebuildColumns() {
         isRebuildingColumns = true
         defer { isRebuildingColumns = false }
-        let highlighted = selectedColumn
         let widths = Dictionary(uniqueKeysWithValues: tableView.tableColumns.map { ($0.identifier, $0.width) })
         for column in tableView.tableColumns { tableView.removeTableColumn(column) }
 
@@ -142,9 +159,6 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
             column.minWidth = 40
             tableView.addTableColumn(column)
         }
-        if let highlighted, highlighted < table.columnCount {
-            tableView.highlightedTableColumn = tableView.tableColumns[viewColumn(for: highlighted)]
-        }
     }
 
     /// 行番号の列の幅を桁数に合わせる
@@ -157,16 +171,82 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
         column.width = width
     }
 
-    /// 選択中の列（モデルの列番号）
-    private var selectedColumn: Int? {
-        modelColumn(tableView.highlightedTableColumn)
+    // MARK: - Column selection
+
+    /// 選択中の列（表示上の列番号）。行ビューとヘッダーの描画用
+    private var selectedViewColumns: IndexSet {
+        IndexSet(selectedColumns.map { viewColumn(for: $0) }.filter { $0 >= 0 })
+    }
+
+    private func setSelectedColumns(_ columns: IndexSet) {
+        let valid = columns.filteredIndexSet { $0 < table.columnCount }
+        guard valid != selectedColumns else { return }
+        selectedColumns = valid
+        redrawColumnSelection()
+    }
+
+    private func redrawColumnSelection() {
+        tableView.headerView?.needsDisplay = true
+        tableView.enumerateAvailableRowViews { rowView, _ in rowView.needsDisplay = true }
+    }
+
+    /// モデルの列番号で 1 列だけを選択し、見える位置までスクロールする（行の選択は外す）
+    private func selectColumn(_ index: Int) {
+        let view = viewColumn(for: index)
+        guard view >= 0 else { return }
+        tableView.deselectAll(nil)
+        setSelectedColumns([index])
+        activeColumn = index
+        columnAnchor = index
+        tableView.scrollColumnToVisible(view)
+    }
+
+    /// ヘッダーのクリックで列を選択する。⌘ で追加・解除、⇧ で起点からの範囲。
+    func tableView(_ tableView: NSTableView, mouseDownInHeaderOf tableColumn: NSTableColumn) {
+        guard let column = modelColumn(tableColumn) else { return }
+        let flags = NSApp.currentEvent?.modifierFlags ?? []
+        var columns = selectedColumns
+        if flags.contains(.command) {
+            if columns.contains(column) { columns.remove(column) } else { columns.insert(column) }
+            columnAnchor = column
+        } else if flags.contains(.shift), let anchor = columnAnchor {
+            columns = IndexSet(integersIn: min(anchor, column)...max(anchor, column))
+        } else {
+            columns = [column]
+            columnAnchor = column
+        }
+        activeColumn = column
+        tableView.deselectAll(nil)
+        setSelectedColumns(columns)
+    }
+
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        let rowView = ColumnTintRowView()
+        rowView.tableView = tableView
+        rowView.selectedViewColumns = { [weak self] in self?.selectedViewColumns ?? [] }
+        return rowView
+    }
+
+    /// 行を選んだら列の選択は外す
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        if !tableView.selectedRowIndexes.isEmpty { setSelectedColumns([]) }
+    }
+
+    /// 今のマウスイベントがヘッダー上か。NSTableView はヘッダーのクリックでも action を送ってくる
+    /// （そのとき clickedRow は -1）ので、行のない所のクリックと区別するのに使う。
+    private var isEventInHeader: Bool {
+        guard let event = NSApp.currentEvent, let header = tableView.headerView else { return false }
+        return header.bounds.contains(header.convert(event.locationInWindow, from: nil))
     }
 
     @objc private func tableClicked(_ sender: Any?) {
+        if isEventInHeader { return } // 列の選択は mouseDownInHeaderOf で済んでいる
+        // 行のない所のクリックは選択をすべて外す
+        if tableView.clickedRow < 0 { setSelectedColumns([]) }
         guard tableView.clickedColumn >= 0,
-              modelColumn(tableView.tableColumns[tableView.clickedColumn]) != nil // 行番号の列は除く
+              let column = modelColumn(tableView.tableColumns[tableView.clickedColumn]) // 行番号の列は除く
         else { return }
-        tableView.highlightedTableColumn = tableView.tableColumns[tableView.clickedColumn]
+        activeColumn = column
         // クリックしたセルから次の検索を始める
         if let current = currentMatch {
             currentMatch = nil
@@ -181,15 +261,8 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
     @objc private func tableDoubleClicked(_ sender: Any?) {
         let row = tableView.clickedRow
         let column = tableView.clickedColumn
-        guard row >= 0, column >= 0, modelColumn(tableView.tableColumns[column]) != nil else { return }
+        guard !isEventInHeader, row >= 0, column >= 0, modelColumn(tableView.tableColumns[column]) != nil else { return }
         tableView.editColumn(column, row: row, with: nil, select: true)
-    }
-
-    /// ヘッダーのクリックで列を選択する（行の選択は外して、削除・コピーの対象を列にする）
-    func tableView(_ tableView: NSTableView, mouseDownInHeaderOf tableColumn: NSTableColumn) {
-        guard modelColumn(tableColumn) != nil else { return }
-        tableView.highlightedTableColumn = tableColumn
-        tableView.deselectAll(nil)
     }
 
     /// 行番号の列は動かさず、ほかの列もその左には置かせない
@@ -303,15 +376,17 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
     private var selectedCellPosition: CellPosition? {
         let row = tableView.selectedRow
         guard row >= 0 else { return nil }
-        return CellPosition(row: row, column: selectedColumn ?? 0)
+        return CellPosition(row: row, column: activeColumn ?? 0)
     }
 
-    /// 一致したセルを選択して見える位置までスクロールする
+    /// 一致したセルの行を選択して見える位置までスクロールする
     private func reveal(_ position: CellPosition) {
         currentMatch = position
+        activeColumn = position.column
         tableView.selectRowIndexes([position.row], byExtendingSelection: false)
-        selectColumn(position.column)
         tableView.scrollRowToVisible(position.row)
+        let view = viewColumn(for: position.column)
+        if view >= 0 { tableView.scrollColumnToVisible(view) }
     }
 
     private func reloadCells(_ positions: [CellPosition]) {
@@ -381,11 +456,11 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     @objc func addColumnLeft(_ sender: Any?) {
-        insertColumn(at: selectedColumn ?? 0)
+        insertColumn(at: selectedColumns.first ?? activeColumn ?? 0)
     }
 
     @objc func addColumnRight(_ sender: Any?) {
-        insertColumn(at: selectedColumn.map { $0 + 1 } ?? table.columnCount)
+        insertColumn(at: (selectedColumns.last ?? activeColumn).map { $0 + 1 } ?? table.columnCount)
     }
 
     @objc func deleteSelectedRows(_ sender: Any?) {
@@ -395,9 +470,12 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     @objc func deleteSelectedColumns(_ sender: Any?) {
-        guard let column = selectedColumn else { return NSSound.beep() }
-        document?.removeColumns(at: [column])
-        tableView.highlightedTableColumn = nil
+        let columns = selectedColumns
+        guard !columns.isEmpty else { return NSSound.beep() }
+        setSelectedColumns([])
+        activeColumn = nil
+        columnAnchor = nil
+        document?.removeColumns(at: columns)
     }
 
     private func insertRow(at index: Int) {
@@ -413,14 +491,6 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
     private func insertColumn(at index: Int) {
         document?.insertColumns([.init(title: nil, cells: [])], at: [index])
         selectColumn(index)
-    }
-
-    /// モデルの列番号で列を選択する
-    private func selectColumn(_ index: Int) {
-        let view = viewColumn(for: index)
-        guard view >= 0 else { return }
-        tableView.highlightedTableColumn = tableView.tableColumns[view]
-        tableView.scrollColumnToVisible(view)
     }
 
     /// 追加した行の背景を一瞬ハイライトしてフェードアウトさせる
@@ -462,8 +532,9 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
         let rows: [[String]]
         if !tableView.selectedRowIndexes.isEmpty {
             rows = tableView.selectedRowIndexes.map { table.rows[$0] }
-        } else if let column = selectedColumn {
-            rows = table.rows.map { [$0[column]] }
+        } else if !selectedColumns.isEmpty {
+            // 列のコピーはセルだけ（見出しは含めない）
+            rows = table.rows.map { row in selectedColumns.map { row[$0] } }
         } else {
             rows = []
         }
@@ -490,6 +561,11 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
         }
         guard !rows.isEmpty else { return }
 
+        if let lastColumn = selectedColumns.last {
+            pasteAsColumns(rows, at: lastColumn + 1)
+            return
+        }
+
         // 列が足りなければ先に列を足す（同じイベント内なので Undo は 1 回で戻る）
         let width = rows.map(\.count).max() ?? 0
         if width > table.columnCount {
@@ -504,6 +580,26 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
         tableView.selectRowIndexes(indexes, byExtendingSelection: false)
         tableView.scrollRowToVisible(start)
         flashRows(indexes)
+    }
+
+    /// 列を選択しているときの貼り付け: クリップボードの各列を、新しい列として `start` の位置に挿入する。
+    /// 行が足りなければ先に空の行を足す（同じイベント内なので Undo は 1 回で戻る）。
+    private func pasteAsColumns(_ rows: [[String]], at start: Int) {
+        guard let document else { return }
+        let width = rows.map(\.count).max() ?? 0
+        guard width > 0 else { return }
+        if rows.count > table.rowCount {
+            let added = table.rowCount..<rows.count
+            let empty = Array(repeating: "", count: table.columnCount)
+            document.insertRows(Array(repeating: empty, count: added.count), at: IndexSet(integersIn: added))
+        }
+        let contents = (0..<width).map { c in
+            CSVTable.ColumnContent(title: nil, cells: rows.map { c < $0.count ? $0[c] : "" })
+        }
+        let indexes = IndexSet(integersIn: start..<(start + width))
+        document.insertColumns(contents, at: indexes)
+        selectColumn(start)
+        setSelectedColumns(indexes)
     }
 
     @objc func delete(_ sender: Any?) {
@@ -524,7 +620,7 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         let hasRows = !tableView.selectedRowIndexes.isEmpty
-        let hasColumns = selectedColumn != nil
+        let hasColumns = !selectedColumns.isEmpty
         switch item.action {
         case #selector(copy(_:)), #selector(cut(_:)), #selector(delete(_:)):
             return hasRows || hasColumns

@@ -1,10 +1,11 @@
 import AppKit
 import CSVCore
 
-final class DocumentWindowController: NSWindowController, NSToolbarDelegate {
+final class DocumentWindowController: NSWindowController, NSToolbarDelegate, NSSearchFieldDelegate {
     private let tableViewController: TableViewController
     private let statusLabel = NSTextField(labelWithString: "")
     private weak var csvDocument: Document?
+    private weak var searchField: NSSearchField?
 
     init(document: Document) {
         csvDocument = document
@@ -33,6 +34,7 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate {
             window.center()
         }
         window.setFrameAutosaveName("DocumentWindow")
+        tableViewController.searchStatusChanged = { [weak self] in self?.updateStatus() }
         updateStatus()
     }
 
@@ -78,12 +80,55 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate {
         let c = document.configuration
         let table = document.table
         statusLabel.stringValue = [
+            tableViewController.searchSummary,
             String(localized: "\(table.rowCount) rows × \(table.columnCount) columns"),
             c.encoding.localizedName + (c.hasByteOrderMark ? " (BOM)" : ""),
             FormatLabels.delimiter(c.delimiter),
             FormatLabels.quote(c.quote, escape: c.escape),
             String(localized: "Decimal \(String(c.decimalMark))"),
-        ].joined(separator: "  ·  ")
+        ].compactMap { $0 }.joined(separator: "  ·  ")
+    }
+
+    // MARK: - Search
+
+    /// 編集 → 検索 → 検索…（⌘F）: ツールバーの検索欄にフォーカスする
+    @objc func showFind(_ sender: Any?) {
+        guard let searchField, let window else { return NSSound.beep() }
+        window.makeFirstResponder(searchField)
+        searchField.selectText(nil)
+    }
+
+    @objc func findNext(_ sender: Any?) {
+        tableViewController.findNext(backward: false)
+    }
+
+    @objc func findPrevious(_ sender: Any?) {
+        tableViewController.findNext(backward: true)
+    }
+
+    /// 入力のたびに一致セルを更新する（検索欄の × ボタンで消したときもここに来る）
+    @objc private func searchFieldChanged(_ sender: NSSearchField) {
+        tableViewController.setSearchQuery(sender.stringValue)
+    }
+
+    /// 検索欄で Return → 次を検索、Shift+Return → 前を検索
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        guard control === searchField else { return false }
+        switch selector {
+        case #selector(NSResponder.insertNewline(_:)):
+            tableViewController.setSearchQuery(control.stringValue)
+            let backward = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false
+            tableViewController.findNext(backward: backward)
+            return true
+        case #selector(NSResponder.cancelOperation(_:)):
+            // Esc で検索を終了して表に戻る
+            control.stringValue = ""
+            tableViewController.setSearchQuery("")
+            tableViewController.focusTable()
+            return true
+        default:
+            return false
+        }
     }
 
     // MARK: - Toolbar
@@ -94,6 +139,7 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate {
         static let deleteRows = NSToolbarItem.Identifier("deleteRows")
         static let deleteColumns = NSToolbarItem.Identifier("deleteColumns")
         static let format = NSToolbarItem.Identifier("format")
+        static let search = NSToolbarItem.Identifier("search")
     }
 
     private func makeToolbar() -> NSToolbar {
@@ -106,7 +152,8 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate {
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [ItemID.addRow, ItemID.addColumn, .space, ItemID.deleteRows, ItemID.deleteColumns, .flexibleSpace, ItemID.format]
+        [ItemID.addRow, ItemID.addColumn, .space, ItemID.deleteRows, ItemID.deleteColumns, .flexibleSpace,
+         ItemID.format, ItemID.search]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -117,6 +164,18 @@ final class DocumentWindowController: NSWindowController, NSToolbarDelegate {
         _ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier,
         willBeInsertedIntoToolbar flag: Bool
     ) -> NSToolbarItem? {
+        if id == ItemID.search {
+            let item = NSSearchToolbarItem(itemIdentifier: id)
+            item.label = String(localized: "Search")
+            let field = item.searchField
+            field.placeholderString = String(localized: "Search")
+            field.sendsSearchStringImmediately = true
+            field.target = self
+            field.action = #selector(searchFieldChanged(_:))
+            field.delegate = self
+            searchField = field
+            return item
+        }
         let item = NSToolbarItem(itemIdentifier: id)
         func configure(_ label: String, _ symbol: String, _ action: Selector) {
             item.label = label

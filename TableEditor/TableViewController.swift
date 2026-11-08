@@ -15,6 +15,14 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
     private let cellIdentifier = NSUserInterfaceItemIdentifier("Cell")
     private var isRebuildingColumns = false
 
+    // 検索
+    private var searchQuery = ""
+    private var searchMatches: [CellPosition] = []
+    private var searchMatchSet: Set<CellPosition> = []
+    private var currentMatch: CellPosition?
+    /// 検索結果が変わったときに呼ぶ（ステータスバーの更新用）
+    var searchStatusChanged: (() -> Void)?
+
     init(document: Document) {
         self.document = document
         super.init(nibName: nil, bundle: nil)
@@ -52,6 +60,7 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     func apply(_ change: TableChange) {
+        if !searchQuery.isEmpty { updateSearchMatches() }
         switch change {
         case .cell(let row, let column):
             let viewColumn = tableView.column(withIdentifier: identifier(for: column))
@@ -129,6 +138,12 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
     @objc private func tableClicked(_ sender: Any?) {
         guard tableView.clickedColumn >= 0 else { return }
         tableView.highlightedTableColumn = tableView.tableColumns[tableView.clickedColumn]
+        // クリックしたセルから次の検索を始める
+        if let current = currentMatch {
+            currentMatch = nil
+            reloadCells([current])
+            searchStatusChanged?()
+        }
     }
 
     /// ダブルクリックしたセルを編集する。
@@ -174,7 +189,94 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
         cell.textField?.stringValue = value
         let decimalMark = document?.tableDecimalMark ?? "."
         cell.textField?.alignment = NumberFormat.isNumber(value, decimalMark: decimalMark) ? .right : .natural
+        applySearchHighlight(to: cell, at: CellPosition(row: row, column: column))
         return cell
+    }
+
+    /// 検索に一致したセルに背景色を付ける。現在の一致は濃く、ほかは薄く。
+    private func applySearchHighlight(to cell: NSTableCellView, at position: CellPosition) {
+        guard let field = cell.textField else { return }
+        if searchMatchSet.contains(position) {
+            field.drawsBackground = true
+            field.backgroundColor = position == currentMatch
+                ? .findHighlightColor
+                : .findHighlightColor.withAlphaComponent(0.35)
+            field.textColor = .black
+        } else {
+            field.drawsBackground = false
+            field.textColor = .controlTextColor
+        }
+    }
+
+    // MARK: - Search
+
+    func focusTable() {
+        view.window?.makeFirstResponder(tableView)
+    }
+
+    /// 「"東京": 3 / 12 件」のような表示用の文字列。検索していなければ nil
+    var searchSummary: String? {
+        guard !searchQuery.isEmpty else { return nil }
+        if searchMatches.isEmpty { return String(localized: "“\(searchQuery)” not found") }
+        let index = currentMatch.flatMap { searchMatches.firstIndex(of: $0) }.map { $0 + 1 }
+        let total = searchMatches.count
+        if let index { return String(localized: "“\(searchQuery)”: \(index) of \(total)") }
+        return String(localized: "“\(searchQuery)”: \(total) found")
+    }
+
+    /// 検索文字列が変わったとき。選択中のセル以降で最初の一致に移動する（入力中に結果を追える）
+    func setSearchQuery(_ query: String) {
+        guard query != searchQuery else { return }
+        searchQuery = query
+        currentMatch = nil
+        updateSearchMatches()
+        if let target = CSVSearch.next(in: searchMatches, from: selectedCellPosition, inclusive: true) {
+            reveal(target)
+        }
+        tableView.reloadData()
+        searchStatusChanged?()
+    }
+
+    func findNext(backward: Bool) {
+        guard !searchMatches.isEmpty else {
+            NSSound.beep()
+            return
+        }
+        let from = currentMatch ?? selectedCellPosition
+        guard let target = CSVSearch.next(in: searchMatches, from: from, backward: backward) else { return }
+        let previous = currentMatch
+        reveal(target)
+        reloadCells([previous, target].compactMap { $0 })
+        searchStatusChanged?()
+    }
+
+    private func updateSearchMatches() {
+        searchMatches = table.cells(matching: searchQuery)
+        searchMatchSet = Set(searchMatches)
+        if let current = currentMatch, !searchMatchSet.contains(current) { currentMatch = nil }
+    }
+
+    /// 選択中の行と列。行が未選択なら nil
+    private var selectedCellPosition: CellPosition? {
+        let row = tableView.selectedRow
+        guard row >= 0 else { return nil }
+        return CellPosition(row: row, column: selectedColumn ?? 0)
+    }
+
+    /// 一致したセルを選択して見える位置までスクロールする
+    private func reveal(_ position: CellPosition) {
+        currentMatch = position
+        tableView.selectRowIndexes([position.row], byExtendingSelection: false)
+        selectColumn(position.column)
+        tableView.scrollRowToVisible(position.row)
+    }
+
+    private func reloadCells(_ positions: [CellPosition]) {
+        for position in positions where position.row < tableView.numberOfRows {
+            let viewColumn = tableView.column(withIdentifier: identifier(for: position.column))
+            guard viewColumn >= 0 else { continue }
+            tableView.reloadData(forRowIndexes: [position.row], columnIndexes: [viewColumn])
+        }
     }
 
     private func makeCellView() -> NSTableCellView {

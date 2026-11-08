@@ -42,6 +42,12 @@ enum MainMenu {
             menu.addItem(String(localized: "Paste"), #selector(NSText.paste(_:)), "v")
             menu.addItem(String(localized: "Delete"), #selector(NSText.delete(_:)))
             menu.addItem(String(localized: "Select All"), #selector(NSText.selectAll(_:)), "a")
+            menu.addItem(.separator())
+            menu.addSubmenu(String(localized: "Find")) { find in
+                find.addItem(String(localized: "Find…"), #selector(DocumentWindowController.showFind(_:)), "f")
+                find.addItem(String(localized: "Find Next"), #selector(DocumentWindowController.findNext(_:)), "g")
+                find.addItem(String(localized: "Find Previous"), #selector(DocumentWindowController.findPrevious(_:)), "g", [.command, .shift])
+            }
         }
 
         // Table

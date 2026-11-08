@@ -3,8 +3,9 @@ import CSVCore
 
 /// 表の表示と編集操作。View ベースの NSTableView を使う。
 ///
-/// 列の識別子にはモデル上の列番号を入れる。列をドラッグで並べ替えたら
-/// モデル側も並べ替え、列を作り直して「表示上の位置 = モデルの列番号」に戻す。
+/// 先頭（表示上の 0 列目）は行番号の列で、データの列はその右に並ぶ。
+/// データの列の識別子にはモデル上の列番号を入れる。列をドラッグで並べ替えたら
+/// モデル側も並べ替え、列を作り直して「表示上の位置 = モデルの列番号 + 1」に戻す。
 ///
 /// View ベースの NSTableView は列選択に対応していないので、
 /// 「選択中の列」は `highlightedTableColumn`（ヘッダーかセルを最後にクリックした列）で表す。
@@ -13,6 +14,7 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
     private weak var document: Document?
     private let tableView = NSTableView()
     private let cellIdentifier = NSUserInterfaceItemIdentifier("Cell")
+    private let rowNumberIdentifier = NSUserInterfaceItemIdentifier("RowNumber")
     private var isRebuildingColumns = false
 
     // 検索
@@ -67,6 +69,7 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
             guard row < tableView.numberOfRows, viewColumn >= 0 else { return tableView.reloadData() }
             tableView.reloadData(forRowIndexes: [row], columnIndexes: [viewColumn])
         case .rows:
+            updateRowNumberWidth()
             tableView.reloadData()
         case .columns:
             rebuildColumns()
@@ -107,8 +110,14 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
         NSUserInterfaceItemIdentifier(String(column))
     }
 
+    /// モデルの列番号。行番号の列なら nil
     private func modelColumn(_ tableColumn: NSTableColumn?) -> Int? {
         tableColumn.flatMap { Int($0.identifier.rawValue) }
+    }
+
+    /// モデルの列番号 → 表示上の列番号（先頭に行番号の列があるので 1 ずれる）
+    private func viewColumn(for column: Int) -> Int {
+        tableView.column(withIdentifier: identifier(for: column))
     }
 
     private func rebuildColumns() {
@@ -117,6 +126,14 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
         let highlighted = selectedColumn
         let widths = Dictionary(uniqueKeysWithValues: tableView.tableColumns.map { ($0.identifier, $0.width) })
         for column in tableView.tableColumns { tableView.removeTableColumn(column) }
+
+        let numbers = NSTableColumn(identifier: rowNumberIdentifier)
+        numbers.title = ""
+        numbers.resizingMask = []
+        numbers.isEditable = false
+        tableView.addTableColumn(numbers)
+        updateRowNumberWidth()
+
         for index in 0..<table.columnCount {
             let id = identifier(for: index)
             let column = NSTableColumn(identifier: id)
@@ -125,9 +142,19 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
             column.minWidth = 40
             tableView.addTableColumn(column)
         }
-        if let highlighted, highlighted < tableView.tableColumns.count {
-            tableView.highlightedTableColumn = tableView.tableColumns[highlighted]
+        if let highlighted, highlighted < table.columnCount {
+            tableView.highlightedTableColumn = tableView.tableColumns[viewColumn(for: highlighted)]
         }
+    }
+
+    /// 行番号の列の幅を桁数に合わせる
+    private func updateRowNumberWidth() {
+        guard let column = tableView.tableColumn(withIdentifier: rowNumberIdentifier) else { return }
+        let digits = String(max(table.rowCount, 1)).count
+        let width = max(32, CGFloat(digits) * 8 + 16)
+        column.minWidth = width
+        column.maxWidth = width
+        column.width = width
     }
 
     /// 選択中の列（モデルの列番号）
@@ -136,7 +163,9 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     @objc private func tableClicked(_ sender: Any?) {
-        guard tableView.clickedColumn >= 0 else { return }
+        guard tableView.clickedColumn >= 0,
+              modelColumn(tableView.tableColumns[tableView.clickedColumn]) != nil // 行番号の列は除く
+        else { return }
         tableView.highlightedTableColumn = tableView.tableColumns[tableView.clickedColumn]
         // クリックしたセルから次の検索を始める
         if let current = currentMatch {
@@ -152,22 +181,30 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
     @objc private func tableDoubleClicked(_ sender: Any?) {
         let row = tableView.clickedRow
         let column = tableView.clickedColumn
-        guard row >= 0, column >= 0 else { return }
+        guard row >= 0, column >= 0, modelColumn(tableView.tableColumns[column]) != nil else { return }
         tableView.editColumn(column, row: row, with: nil, select: true)
     }
 
     /// ヘッダーのクリックで列を選択する（行の選択は外して、削除・コピーの対象を列にする）
     func tableView(_ tableView: NSTableView, mouseDownInHeaderOf tableColumn: NSTableColumn) {
+        guard modelColumn(tableColumn) != nil else { return }
         tableView.highlightedTableColumn = tableColumn
         tableView.deselectAll(nil)
     }
 
+    /// 行番号の列は動かさず、ほかの列もその左には置かせない
+    func tableView(_ tableView: NSTableView, shouldReorderColumn columnIndex: Int, toColumn newColumnIndex: Int) -> Bool {
+        columnIndex != 0 && newColumnIndex != 0
+    }
+
     func tableViewColumnDidMove(_ notification: Notification) {
         guard !isRebuildingColumns,
-              let old = notification.userInfo?["NSOldColumn"] as? Int,
-              let new = notification.userInfo?["NSNewColumn"] as? Int,
-              old != new
+              let oldView = notification.userInfo?["NSOldColumn"] as? Int,
+              let newView = notification.userInfo?["NSNewColumn"] as? Int,
+              oldView != newView, oldView > 0, newView > 0
         else { return }
+        let old = oldView - 1
+        let new = newView - 1
         // 通知の処理中に列を作り直さないよう、次のランループで反映する
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -183,6 +220,12 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        if tableColumn?.identifier == rowNumberIdentifier {
+            let cell = tableView.makeView(withIdentifier: rowNumberIdentifier, owner: self) as? NSTableCellView
+                ?? makeRowNumberView()
+            cell.textField?.stringValue = String(row + 1)
+            return cell
+        }
         guard let column = modelColumn(tableColumn), column < table.columnCount, row < table.rowCount else { return nil }
         let cell = tableView.makeView(withIdentifier: cellIdentifier, owner: self) as? NSTableCellView ?? makeCellView()
         let value = table[row, column]
@@ -279,6 +322,25 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
         }
     }
 
+    /// 行番号（編集不可、右寄せ、灰色の等幅数字）
+    private func makeRowNumberView() -> NSTableCellView {
+        let cell = NSTableCellView()
+        cell.identifier = rowNumberIdentifier
+        let field = NSTextField(labelWithString: "")
+        field.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        field.textColor = .secondaryLabelColor
+        field.alignment = .right
+        field.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(field)
+        cell.textField = field
+        NSLayoutConstraint.activate([
+            field.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
+            field.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6),
+            field.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+        ])
+        return cell
+    }
+
     private func makeCellView() -> NSTableCellView {
         let cell = NSTableCellView()
         cell.identifier = cellIdentifier
@@ -344,7 +406,8 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
         document.insertRows([Array(repeating: "", count: table.columnCount)], at: [index])
         tableView.selectRowIndexes([index], byExtendingSelection: false)
         tableView.scrollRowToVisible(index)
-        tableView.editColumn(0, row: index, with: nil, select: true)
+        tableView.editColumn(viewColumn(for: 0), row: index, with: nil, select: true)
+        flashRows([index])
     }
 
     private func insertColumn(at index: Int) {
@@ -352,10 +415,42 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
         selectColumn(index)
     }
 
+    /// モデルの列番号で列を選択する
     private func selectColumn(_ index: Int) {
-        guard index < tableView.tableColumns.count else { return }
-        tableView.highlightedTableColumn = tableView.tableColumns[index]
-        tableView.scrollColumnToVisible(index)
+        let view = viewColumn(for: index)
+        guard view >= 0 else { return }
+        tableView.highlightedTableColumn = tableView.tableColumns[view]
+        tableView.scrollColumnToVisible(view)
+    }
+
+    /// 追加した行の背景を一瞬ハイライトしてフェードアウトさせる
+    private func flashRows(_ rows: IndexSet) {
+        // 行の作り直しとスクロールが終わってから行のビューを取り出す
+        DispatchQueue.main.async { [weak self] in
+            guard let tableView = self?.tableView else { return }
+            tableView.layoutSubtreeIfNeeded()
+            for row in rows where row < tableView.numberOfRows {
+                guard let rowView = tableView.rowView(atRow: row, makeIfNecessary: false) else { continue }
+                rowView.wantsLayer = true
+                guard let rowLayer = rowView.layer else { continue }
+                let flash = CALayer()
+                flash.frame = rowLayer.bounds
+                flash.backgroundColor = NSColor.findHighlightColor.withAlphaComponent(0.6).cgColor
+                flash.opacity = 0
+                // セルの文字より下（行の背景・選択色より上）に置く
+                rowLayer.insertSublayer(flash, at: 0)
+
+                let fade = CABasicAnimation(keyPath: "opacity")
+                fade.fromValue = 1
+                fade.toValue = 0
+                fade.duration = 0.9
+                fade.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                CATransaction.begin()
+                CATransaction.setCompletionBlock { flash.removeFromSuperlayer() }
+                flash.add(fade, forKey: "flash")
+                CATransaction.commit()
+            }
+        }
     }
 
     // MARK: - Copy / Paste / Delete
@@ -408,6 +503,7 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
         document.insertRows(rows, at: indexes)
         tableView.selectRowIndexes(indexes, byExtendingSelection: false)
         tableView.scrollRowToVisible(start)
+        flashRows(indexes)
     }
 
     @objc func delete(_ sender: Any?) {

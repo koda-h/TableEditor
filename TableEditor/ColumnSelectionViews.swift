@@ -27,6 +27,19 @@ final class ColumnTintRowView: NSTableRowView {
 /// 選択中の列の見出しに色を付けるヘッダー。標準の `highlightedTableColumn` は 1 列しか扱えない。
 final class ColumnSelectionHeaderView: NSTableHeaderView {
     var selectedViewColumns: () -> IndexSet = { [] }
+    /// 見出しをダブルクリックしたとき（表示上の列番号）
+    var onDoubleClick: ((Int) -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2, let onDoubleClick {
+            let column = column(at: convert(event.locationInWindow, from: nil))
+            if column >= 0 {
+                onDoubleClick(column)
+                return
+            }
+        }
+        super.mouseDown(with: event)
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)

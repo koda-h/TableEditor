@@ -55,7 +55,9 @@ final class Document: NSDocument {
         notify(.cell(row: row, column: column))
     }
 
+    /// 見出しを変える。ヘッダー行がないとき（列名が A, B, C …）は何もしない
     func setHeaderTitle(_ title: String, column: Int) {
+        guard table.header != nil else { return }
         let old = table.columnTitle(column)
         guard old != title else { return }
         table.setHeaderTitle(title, column: column)

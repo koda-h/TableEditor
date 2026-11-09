@@ -13,7 +13,7 @@ import CSVCore
 /// - セルのクリックは行の選択だけ。クリックした列は `activeColumn` として覚え、
 ///   列の追加位置や検索の開始位置に使う
 final class TableViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSMenuItemValidation,
-    NSMenuDelegate {
+    NSMenuDelegate, NSTextFieldDelegate {
     private weak var document: Document?
     private let tableView = NSTableView()
     private let cellIdentifier = NSUserInterfaceItemIdentifier("Cell")
@@ -26,6 +26,10 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
     private var activeColumn: Int?
     /// ⇧クリックの範囲選択の起点
     private var columnAnchor: Int?
+
+    // 見出しの編集
+    private var headerEditor: NSTextField?
+    private var editingHeaderColumn: Int?
 
     // 検索
     private var searchQuery = ""
@@ -63,6 +67,7 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
 
         let header = ColumnSelectionHeaderView(frame: tableView.headerView?.frame ?? NSRect(x: 0, y: 0, width: 0, height: 28))
         header.selectedViewColumns = { [weak self] in self?.selectedViewColumns ?? [] }
+        header.onDoubleClick = { [weak self] viewColumn in self?.beginEditingHeader(viewColumn: viewColumn) }
         tableView.headerView = header
 
         let scrollView = NSScrollView()
@@ -86,6 +91,8 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
             updateRowNumberWidth()
             tableView.reloadData()
         case .columns:
+            // Undo などで列が作り直されるときは、編集中の見出しを確定せずに閉じる
+            endEditingHeader(commit: false)
             rebuildColumns()
             tableView.reloadData()
             // Undo などで列が減ったら、なくなった列を選択から外す
@@ -169,6 +176,60 @@ final class TableViewController: NSViewController, NSTableViewDataSource, NSTabl
         column.minWidth = width
         column.maxWidth = width
         column.width = width
+    }
+
+    // MARK: - Header editing
+
+    /// 見出しの上にテキスト欄を重ねて編集する。NSTableHeaderView 自体には編集機能がない。
+    /// ヘッダー行がない（列名が A, B, C …）ときは編集できない。
+    private func beginEditingHeader(viewColumn: Int) {
+        guard viewColumn < tableView.numberOfColumns,
+              let column = modelColumn(tableView.tableColumns[viewColumn]),
+              let header = tableView.headerView
+        else { return }
+        guard table.header != nil else { return NSSound.beep() }
+        endEditingHeader(commit: true)
+
+        tableView.scrollColumnToVisible(viewColumn)
+        header.layoutSubtreeIfNeeded()
+        let field = NSTextField(frame: header.headerRect(ofColumn: viewColumn).insetBy(dx: 3, dy: 3))
+        field.stringValue = table.columnTitle(column)
+        field.font = tableView.tableColumns[viewColumn].headerCell.font
+        field.lineBreakMode = .byClipping
+        field.cell?.isScrollable = true
+        field.delegate = self
+        header.addSubview(field)
+        headerEditor = field
+        editingHeaderColumn = column
+        view.window?.makeFirstResponder(field)
+        field.currentEditor()?.selectAll(nil)
+    }
+
+    /// 見出しの編集を終える。`commit` なら入力を反映する（Undo できる）
+    private func endEditingHeader(commit: Bool, focusTable shouldFocus: Bool = false) {
+        guard let field = headerEditor, let column = editingHeaderColumn else { return }
+        // 確定で列が作り直されて再入するので、先に状態を消す
+        headerEditor = nil
+        editingHeaderColumn = nil
+        let title = field.stringValue
+        field.delegate = nil
+        field.removeFromSuperview()
+        if commit { document?.setHeaderTitle(title, column: column) }
+        if shouldFocus { focusTable() }
+    }
+
+    /// Return・Tab で確定して表に戻る。ほかの場所をクリックしたときは確定だけ
+    func controlTextDidEndEditing(_ obj: Notification) {
+        guard (obj.object as? NSTextField) === headerEditor else { return }
+        let movement = obj.userInfo?["NSTextMovement"] as? Int ?? NSTextMovement.other.rawValue
+        endEditingHeader(commit: true, focusTable: movement != NSTextMovement.other.rawValue)
+    }
+
+    /// Esc で取り消して表に戻る
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        guard control === headerEditor, selector == #selector(NSResponder.cancelOperation(_:)) else { return false }
+        endEditingHeader(commit: false, focusTable: true)
+        return true
     }
 
     // MARK: - Column selection
